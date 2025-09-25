@@ -735,9 +735,35 @@ async function createMonitorFromData(monitorData, userId) {
     if (monitorData.statusPages || (monitorData.statusPageSlug && monitorData.groupName)) {
         await processStatusPages(bean.id, monitorData);
     }
+
+    // Start the monitor if it's active (similar to socket handler "add")
+    if (bean.active !== false) {
+        try {
+            // Add monitor to server's monitor list
+            server.monitorList[bean.id] = bean;
+
+            // Start monitoring
+            await bean.start(io);
+
+            log.info("api", `Started imported monitor: ${bean.name} (ID: ${bean.id})`);
+        } catch (error) {
+            log.error("api", `Failed to start imported monitor ${bean.name} (ID: ${bean.id}): ${error.message}`);
+        }
+    }
 }
 
 async function updateMonitorFromData(existingBean, monitorData, userId) {
+    // Stop existing monitor if it's running
+    if (existingBean.id in server.monitorList) {
+        try {
+            await server.monitorList[existingBean.id].stop();
+            delete server.monitorList[existingBean.id];
+            log.info("api", `Stopped existing monitor for update: ${existingBean.name} (ID: ${existingBean.id})`);
+        } catch (error) {
+            log.warn("api", `Failed to stop existing monitor ${existingBean.name} (ID: ${existingBean.id}): ${error.message}`);
+        }
+    }
+
     await mapMonitorFields(existingBean, monitorData, userId);
 
     await R.store(existingBean);
@@ -755,6 +781,21 @@ async function updateMonitorFromData(existingBean, monitorData, userId) {
 
     if (monitorData.statusPages || (monitorData.statusPageSlug && monitorData.groupName)) {
         await processStatusPages(existingBean.id, monitorData);
+    }
+
+    // Restart the monitor if it's active
+    if (existingBean.active !== false) {
+        try {
+            // Add monitor to server's monitor list
+            server.monitorList[existingBean.id] = existingBean;
+
+            // Start monitoring
+            await existingBean.start(io);
+
+            log.info("api", `Restarted updated monitor: ${existingBean.name} (ID: ${existingBean.id})`);
+        } catch (error) {
+            log.error("api", `Failed to restart updated monitor ${existingBean.name} (ID: ${existingBean.id}): ${error.message}`);
+        }
     }
 }
 
@@ -910,9 +951,9 @@ async function processNotifications(monitorId, notificationList, userId) {
                         monitorNotification.notification_id = notification.id;
 
                         await R.store(monitorNotification);
-                        log.info("api", `? Associated notification "${notificationName}" (ID: ${notification.id}) with monitor ${monitorId}`);
+                        log.info("api", `- Associated notification "${notificationName}" (ID: ${notification.id}) with monitor ${monitorId}`);
                     } else {
-                        log.warn("api", `? Notification with name "${notificationName}" not found for user ${userId}`);
+                        log.warn("api", `- Notification with name "${notificationName}" not found for user ${userId}`);
                     }
                 }
             } catch (error) {
