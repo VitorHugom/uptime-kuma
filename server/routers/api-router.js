@@ -732,8 +732,8 @@ async function createMonitorFromData(monitorData, userId) {
         await processNotifications(bean.id, monitorData.notificationIDList, userId);
     }
 
-    if (monitorData.statusPageSlug && monitorData.groupName) {
-        await processStatusPageGroup(bean.id, monitorData.statusPageSlug, monitorData.groupName);
+    if (monitorData.statusPages || (monitorData.statusPageSlug && monitorData.groupName)) {
+        await processStatusPages(bean.id, monitorData);
     }
 }
 
@@ -753,8 +753,8 @@ async function updateMonitorFromData(existingBean, monitorData, userId) {
         await processNotifications(existingBean.id, monitorData.notificationIDList, userId);
     }
 
-    if (monitorData.statusPageSlug && monitorData.groupName) {
-        await processStatusPageGroup(existingBean.id, monitorData.statusPageSlug, monitorData.groupName);
+    if (monitorData.statusPages || (monitorData.statusPageSlug && monitorData.groupName)) {
+        await processStatusPages(existingBean.id, monitorData);
     }
 }
 
@@ -1060,9 +1060,50 @@ function validateMonitorData(monitorData) {
         errors.push("Group name must be a string");
     }
 
+    if (monitorData.statusPages) {
+        if (!Array.isArray(monitorData.statusPages)) {
+            errors.push("Status pages must be an array");
+        } else {
+            for (let i = 0; i < monitorData.statusPages.length; i++) {
+                const statusPageConfig = monitorData.statusPages[i];
+                if (!statusPageConfig.slug || typeof statusPageConfig.slug !== 'string') {
+                    errors.push(`Status page ${i + 1}: slug is required and must be a string`);
+                }
+                if (!statusPageConfig.groupName || typeof statusPageConfig.groupName !== 'string') {
+                    errors.push(`Status page ${i + 1}: groupName is required and must be a string`);
+                }
+            }
+        }
+    }
+
     return {
         isValid: errors.length === 0,
         errors: errors
+    }
+}
+
+async function processStatusPages(monitorId, monitorData) {
+    try {
+        if (monitorData.statusPages && Array.isArray(monitorData.statusPages)) {
+            log.info("api", `Processing multiple status pages for monitor ${monitorId}: ${monitorData.statusPages.length} pages`);
+
+            for (const statusPageConfig of monitorData.statusPages) {
+                if (statusPageConfig.slug && statusPageConfig.groupName) {
+                    await processStatusPageGroup(monitorId, statusPageConfig.slug, statusPageConfig.groupName);
+                } else {
+                    log.warn("api", `Invalid status page configuration: missing slug or groupName`, statusPageConfig);
+                }
+            }
+        }
+        else if (monitorData.statusPageSlug && monitorData.groupName) {
+            log.info("api", `Processing single status page for monitor ${monitorId} (legacy format): ${monitorData.statusPageSlug}`);
+            await processStatusPageGroup(monitorId, monitorData.statusPageSlug, monitorData.groupName);
+        }
+        else {
+            log.warn("api", `No valid status page configuration found for monitor ${monitorId}`);
+        }
+    } catch (error) {
+        log.error("api", `Error processing status pages for monitor ${monitorId}: ${error.message}`);
     }
 }
 
