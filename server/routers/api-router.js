@@ -732,12 +732,38 @@ async function createMonitorFromData(monitorData, userId) {
         await processNotifications(bean.id, monitorData.notificationIDList, userId);
     }
 
-    if (monitorData.statusPageSlug && monitorData.groupName) {
-        await processStatusPageGroup(bean.id, monitorData.statusPageSlug, monitorData.groupName);
+    if (monitorData.statusPages || (monitorData.statusPageSlug && monitorData.groupName)) {
+        await processStatusPages(bean.id, monitorData);
+    }
+
+    // Start the monitor if it's active (similar to socket handler "add")
+    if (bean.active !== false) {
+        try {
+            // Add monitor to server's monitor list
+            server.monitorList[bean.id] = bean;
+
+            // Start monitoring
+            await bean.start(io);
+
+            log.info("api", `Started imported monitor: ${bean.name} (ID: ${bean.id})`);
+        } catch (error) {
+            log.error("api", `Failed to start imported monitor ${bean.name} (ID: ${bean.id}): ${error.message}`);
+        }
     }
 }
 
 async function updateMonitorFromData(existingBean, monitorData, userId) {
+    // Stop existing monitor if it's running
+    if (existingBean.id in server.monitorList) {
+        try {
+            await server.monitorList[existingBean.id].stop();
+            delete server.monitorList[existingBean.id];
+            log.info("api", `Stopped existing monitor for update: ${existingBean.name} (ID: ${existingBean.id})`);
+        } catch (error) {
+            log.warn("api", `Failed to stop existing monitor ${existingBean.name} (ID: ${existingBean.id}): ${error.message}`);
+        }
+    }
+
     await mapMonitorFields(existingBean, monitorData, userId);
 
     await R.store(existingBean);
@@ -753,8 +779,23 @@ async function updateMonitorFromData(existingBean, monitorData, userId) {
         await processNotifications(existingBean.id, monitorData.notificationIDList, userId);
     }
 
-    if (monitorData.statusPageSlug && monitorData.groupName) {
-        await processStatusPageGroup(existingBean.id, monitorData.statusPageSlug, monitorData.groupName);
+    if (monitorData.statusPages || (monitorData.statusPageSlug && monitorData.groupName)) {
+        await processStatusPages(existingBean.id, monitorData);
+    }
+
+    // Restart the monitor if it's active
+    if (existingBean.active !== false) {
+        try {
+            // Add monitor to server's monitor list
+            server.monitorList[existingBean.id] = existingBean;
+
+            // Start monitoring
+            await existingBean.start(io);
+
+            log.info("api", `Restarted updated monitor: ${existingBean.name} (ID: ${existingBean.id})`);
+        } catch (error) {
+            log.error("api", `Failed to restart updated monitor ${existingBean.name} (ID: ${existingBean.id}): ${error.message}`);
+        }
     }
 }
 
@@ -910,9 +951,9 @@ async function processNotifications(monitorId, notificationList, userId) {
                         monitorNotification.notification_id = notification.id;
 
                         await R.store(monitorNotification);
-                        log.info("api", `? Associated notification "${notificationName}" (ID: ${notification.id}) with monitor ${monitorId}`);
+                        log.info("api", `- Associated notification "${notificationName}" (ID: ${notification.id}) with monitor ${monitorId}`);
                     } else {
-                        log.warn("api", `? Notification with name "${notificationName}" not found for user ${userId}`);
+                        log.warn("api", `- Notification with name "${notificationName}" not found for user ${userId}`);
                     }
                 }
             } catch (error) {
@@ -1060,9 +1101,50 @@ function validateMonitorData(monitorData) {
         errors.push("Group name must be a string");
     }
 
+    if (monitorData.statusPages) {
+        if (!Array.isArray(monitorData.statusPages)) {
+            errors.push("Status pages must be an array");
+        } else {
+            for (let i = 0; i < monitorData.statusPages.length; i++) {
+                const statusPageConfig = monitorData.statusPages[i];
+                if (!statusPageConfig.slug || typeof statusPageConfig.slug !== 'string') {
+                    errors.push(`Status page ${i + 1}: slug is required and must be a string`);
+                }
+                if (!statusPageConfig.groupName || typeof statusPageConfig.groupName !== 'string') {
+                    errors.push(`Status page ${i + 1}: groupName is required and must be a string`);
+                }
+            }
+        }
+    }
+
     return {
         isValid: errors.length === 0,
         errors: errors
+    }
+}
+
+async function processStatusPages(monitorId, monitorData) {
+    try {
+        if (monitorData.statusPages && Array.isArray(monitorData.statusPages)) {
+            log.info("api", `Processing multiple status pages for monitor ${monitorId}: ${monitorData.statusPages.length} pages`);
+
+            for (const statusPageConfig of monitorData.statusPages) {
+                if (statusPageConfig.slug && statusPageConfig.groupName) {
+                    await processStatusPageGroup(monitorId, statusPageConfig.slug, statusPageConfig.groupName);
+                } else {
+                    log.warn("api", `Invalid status page configuration: missing slug or groupName`, statusPageConfig);
+                }
+            }
+        }
+        else if (monitorData.statusPageSlug && monitorData.groupName) {
+            log.info("api", `Processing single status page for monitor ${monitorId} (legacy format): ${monitorData.statusPageSlug}`);
+            await processStatusPageGroup(monitorId, monitorData.statusPageSlug, monitorData.groupName);
+        }
+        else {
+            log.warn("api", `No valid status page configuration found for monitor ${monitorId}`);
+        }
+    } catch (error) {
+        log.error("api", `Error processing status pages for monitor ${monitorId}: ${error.message}`);
     }
 }
 
