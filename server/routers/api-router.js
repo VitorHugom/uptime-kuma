@@ -736,6 +736,10 @@ async function createMonitorFromData(monitorData, userId) {
         await processStatusPages(bean.id, monitorData);
     }
 
+    if (monitorData.maintenanceList) {
+        await processMaintenances(bean.id, monitorData.maintenanceList, userId);
+    }
+
     // Start the monitor if it's active (similar to socket handler "add")
     if (bean.active !== false) {
         try {
@@ -781,6 +785,10 @@ async function updateMonitorFromData(existingBean, monitorData, userId) {
 
     if (monitorData.statusPages || (monitorData.statusPageSlug && monitorData.groupName)) {
         await processStatusPages(existingBean.id, monitorData);
+    }
+
+    if (monitorData.maintenanceList) {
+        await processMaintenances(existingBean.id, monitorData.maintenanceList, userId);
     }
 
     // Restart the monitor if it's active
@@ -1117,9 +1125,64 @@ function validateMonitorData(monitorData) {
         }
     }
 
+    // Validate maintenanceList array
+    if (monitorData.maintenanceList) {
+        if (!Array.isArray(monitorData.maintenanceList)) {
+            errors.push("Maintenance list must be an array");
+        } else {
+            for (let i = 0; i < monitorData.maintenanceList.length; i++) {
+                const maintenanceTitle = monitorData.maintenanceList[i];
+                if (!maintenanceTitle || typeof maintenanceTitle !== 'string') {
+                    errors.push(`Maintenance ${i + 1}: title is required and must be a string`);
+                }
+            }
+        }
+    }
+
     return {
         isValid: errors.length === 0,
         errors: errors
+    }
+}
+
+async function processMaintenances(monitorId, maintenanceList, userId) {
+    try {
+        // Remove existing maintenance associations for this monitor
+        await R.exec("DELETE FROM monitor_maintenance WHERE monitor_id = ?", [monitorId]);
+
+        if (Array.isArray(maintenanceList)) {
+            log.info("api", `Processing maintenances by titles for monitor ${monitorId}: [${maintenanceList.map(m => `"${m}"`).join(", ")}]`);
+
+            for (const maintenanceTitle of maintenanceList) {
+                try {
+                    if (typeof maintenanceTitle === 'string' && maintenanceTitle.trim()) {
+                        // Find maintenance by title
+                        const maintenance = await R.findOne("maintenance", "title = ? AND user_id = ?", [
+                            maintenanceTitle.trim(),
+                            userId
+                        ]);
+
+                        if (maintenance) {
+                            // Create monitor_maintenance relationship
+                            const monitorMaintenance = R.dispense("monitor_maintenance");
+                            monitorMaintenance.monitor_id = monitorId;
+                            monitorMaintenance.maintenance_id = maintenance.id;
+
+                            await R.store(monitorMaintenance);
+                            log.info("api", `- Associated maintenance "${maintenanceTitle}" (ID: ${maintenance.id}) with monitor ${monitorId}`);
+                        } else {
+                            log.warn("api", `- Maintenance with title "${maintenanceTitle}" not found for user ${userId}`);
+                        }
+                    }
+                } catch (error) {
+                    log.error("api", `Error processing maintenance "${maintenanceTitle}": ${error.message}`);
+                }
+            }
+        } else {
+            log.warn("api", `Invalid maintenance list format for monitor ${monitorId}. Expected array of maintenance titles.`);
+        }
+    } catch (error) {
+        log.error("api", `Error processing maintenances for monitor ${monitorId}: ${error.message}`);
     }
 }
 
